@@ -357,6 +357,15 @@ def close_tab(target=None):
         target_id = current_tab()["targetId"]
     cdp("Target.closeTarget", targetId=target_id)
 
+def new_window(url="about:blank"):
+    # Like new_tab, but in a SEPARATE browser window so we never touch the
+    # user's window or tab strip. Use for the first nav of a testing flow,
+    # then reuse the returned tab via goto_url — don't open one per step.
+    tid = cdp("Target.createTarget", url="about:blank", newWindow=True)["targetId"]
+    switch_tab(tid)
+    if url != "about:blank":
+        goto_url(url)
+    return tid
 
 def ensure_real_tab():
     """Switch to a real user tab if current is chrome:// / internal / stale."""

@@ -19,13 +19,16 @@ Domain skills are off by default. Set `BH_DOMAIN_SKILLS=1` to enable them; see t
 
 ```bash
 browser-harness <<'PY'
+new_window("https://docs.browser-use.com")
+wait_for_load()
 print(page_info())
 PY
 ```
 
 - Invoke as `browser-harness`. Use heredocs for multi-line commands.
 - Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
-- First navigation is `new_tab(url)`, not `goto_url(url)`.
+- First navigation is `new_window(url)`, not `goto_url(url)`: it creates a separate browser window and avoids touching the user's tab strip.
+- Reuse that tab via `goto_url(url)` for later steps. Do not call `new_window()` or `new_tab()` per step.
 - `new_tab()` and `switch_tab()` attach and move the horse marker without
   changing Chrome's visible tab. Screenshots and normal CDP input work in the
   background; call `activate_tab(target)` only when the user explicitly asks
