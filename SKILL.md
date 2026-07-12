@@ -15,24 +15,27 @@ Domain skills are off by default. Set `BH_DOMAIN_SKILLS=1` to enable them; see t
 
 **If `BH_DOMAIN_SKILLS=1` and the task is site-specific, read every file in the matching `$BH_AGENT_WORKSPACE/domain-skills/<site>/` directory before inventing an approach.**
 
+## Recording is not this skill's job
+
+Any demo, screen capture, walkthrough or before/after clip goes through the `demo-recorder` skill (`~/.claude/skills/demo-recorder/SKILL.md`). It runs on this harness, so reaching for `capture_screenshot` in a loop and stitching with ffmpeg looks like the obvious move and is wrong: you lose captions, viewport control and the webm encode, and you rebuild the engine badly every time.
+
+This holds mid-flow. Already driving the harness to verify something and then asked to record it? Stop and hand off. Being three calls deep in `capture_screenshot` is the moment the mistake happens, not a reason to continue.
+
 ## Usage
 
 ```bash
 browser-harness <<'PY'
-new_window("https://docs.browser-use.com")
+use_window("https://docs.browser-use.com")
 wait_for_load()
 print(page_info())
 PY
 ```
 
-- Invoke as `browser-harness`. Use heredocs for multi-line commands.
-- Helpers are pre-imported. `run.py` calls `ensure_daemon()` before `exec`.
-- First navigation is `new_window(url)`, not `goto_url(url)`: it creates a separate browser window and avoids touching the user's tab strip.
-- Reuse that tab via `goto_url(url)` for later steps. Do not call `new_window()` or `new_tab()` per step.
-- `new_tab()` and `switch_tab()` attach and move the horse marker without
-  changing Chrome's visible tab. Screenshots and normal CDP input work in the
-  background; call `activate_tab(target)` only when the user explicitly asks
-  or a page demonstrably pauses rendering while hidden.
+- Invoke as `browser-harness`. Use heredocs for multi-line commands — each invocation is its own process.
+- Helpers are pre-imported. `run.py` calls `ensure_daemon()` before exec.
+- use_window does NOT raise its window on reuse, so a multi-step flow never steals the user's foreground. Keep it that way: don't call ensure_real_tab()/switch_tab() as a habit (both activate), and don't pass activate=True unless the user asked to watch. If a call lands on the wrong target, re-run use_window(url) rather than reaching for ensure_real_tab().
+- Start EVERY invocation of a flow with use_window(url). It creates one dedicated window on first call (a SEPARATE window — never the user's window or tab strip), pins its tab, and REUSES that exact tab on every later call. Because each `browser-harness` invocation is a separate process, this is what makes the window persist across steps — the pin is saved to disk, not held in memory. Pass a url to navigate; it skips the reload when the tab is already there.
+- Do NOT call new_window(url) at the top of each invocation. new_window ALWAYS spawns a fresh window, so calling it per invocation (the natural mistake when a flow is several separate calls) opens a new window every step. use_window is the idempotent create-or-reuse version — prefer it. Drop to raw new_window/new_tab/goto_url only for deliberate multi-window/multi-tab work.
 - The normal local flow attaches to the running Chrome/Chromium CDP endpoint. No browser ids or local profile selection.
 
 ## Local Chrome
@@ -44,6 +47,18 @@ browser-harness --doctor
 ```
 
 If Chrome is not running at all, the harness launches it automatically and retries.
+
+### The "Allow remote debugging" prompt (local Chrome)
+
+By default the daemon attaches to the user's everyday Chrome via the runtime chrome://inspect consent. Chrome re-shows that "Allow remote debugging for this browser instance" prompt on EVERY fresh CDP connection — i.e. every daemon restart (a `--reload`, a crash, an idle drop). It is not a one-time grant.
+
+Permanent fix — run once:
+
+```bash
+browser-harness --debug-chrome    # launches a dedicated Chrome (own profile, remote-debug on at launch), pins it via .env
+```
+
+This Chrome has remote debugging enabled as a launch flag, so the consent never appears again — not on restart, not after you quit it (ensure_daemon relaunches it). It uses a separate profile (no access to the everyday Chrome's logins; for logged-in flows use a synced profile or the everyday-Chrome path and accept the occasional prompt). Editing the harness itself still needs `--reload`, which with the dedicated Chrome reconnects silently.
 
 If Chrome is running but remote debugging is not enabled, the harness opens:
 
@@ -108,7 +123,7 @@ Cloud profile cookie sync reference: https://github.com/browser-use/browser-harn
 - Clicking: AX node -> box center -> `click_at_xy(x, y)` -> verify with a targeted `js(...)`/`page_info()` check.
 - Fall back to raw HTML via `js(...)` only when the AX tree lacks the element (canvas, exotic widgets); screenshot when layout or imagery matters.
 - After navigation, call `wait_for_load()`.
-- If the current tab is stale or internal, call `ensure_real_tab()`.
+- If a call lands on the wrong tab, re-run `use_window(url)` first (it re-attaches to the pinned tab without raising it). `ensure_real_tab()` is the fallback for a genuinely internal/stale target, and it does raise a window, so don't reach for it by reflex.
 - Use `js(...)` for DOM inspection or extraction when coordinates are the wrong tool.
 - Login walls: stop and ask. Exception: use available SSO automatically when Chrome is already signed in; still stop for passwords, MFA, consent, or ambiguous account choice.
 - Raw CDP is available with `cdp("Domain.method", ...)`.
@@ -170,6 +185,9 @@ If you get stuck on a browser mechanic, check https://github.com/browser-use/bro
 - Coordinate clicks default. CDP mouse events pass through iframes/shadow/cross-origin at the compositor level.
 - Keep the connection model simple: use the default daemon, `BU_NAME`, `BU_CDP_URL`, `BU_CDP_WS`, or `start_remote_daemon(...)`.
 - Core helpers stay short. Put task-specific helper additions in `$BH_AGENT_WORKSPACE/agent_helpers.py`.
+- Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
+- Verification: print(page_info()) is the simplest "is this alive?" check, but screenshots are the default way to verify whether a visible action actually worked.
+- Responsive checks: test both widths on the one browser via mobile_viewport() and desktop_viewport() (or set_viewport(w, h, mobile=)), re-screenshotting after each. mobile_viewport() also turns on touch emulation, so hover/pointer-gated layouts behave like a phone. Call reset_viewport() when done. A UI change isn't verified until you've seen it at phone AND desktop width.
 
 ## Gotchas
 

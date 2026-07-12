@@ -359,13 +359,95 @@ def close_tab(target=None):
 
 def new_window(url="about:blank"):
     # Like new_tab, but in a SEPARATE browser window so we never touch the
-    # user's window or tab strip. Use for the first nav of a testing flow,
-    # then reuse the returned tab via goto_url — don't open one per step.
+    # user's window or tab strip. Prefer use_window() for a testing flow — it
+    # reuses one dedicated window across invocations instead of spawning a fresh
+    # one whenever a later `browser-harness -c` call forgets the tab is open.
     tid = cdp("Target.createTarget", url="about:blank", newWindow=True)["targetId"]
     switch_tab(tid)
     if url != "about:blank":
         goto_url(url)
     return tid
+
+
+def _pinned_window_path():
+    # Per-endpoint file holding the dedicated agent window's tab target id, so
+    # the pin survives across separate `browser-harness -c` invocations (each is
+    # its own process; only the daemon + this file carry state between them).
+    return ipc._TMP / f"{ipc._stem(NAME)}.win"
+
+
+def _read_pinned_window():
+    try:
+        return _pinned_window_path().read_text().strip() or None
+    except (FileNotFoundError, OSError):
+        return None
+
+
+def _write_pinned_window(target_id):
+    p = _pinned_window_path()
+    try:
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(target_id or "")
+        os.replace(tmp, p)  # atomic: a concurrent reader never sees a half-write
+    except OSError:
+        pass
+
+
+def use_window(url=None):
+    """Create-or-reuse ONE dedicated agent window, persistently across invocations.
+
+    The idempotent entry point for a testing flow: call it at the top of every
+    `browser-harness -c` invocation. The first call opens a SEPARATE window (never
+    the user's window or tab strip) and pins its tab; every later call reuses that
+    same tab. Pass `url` to navigate the reused tab (skipped when it's already
+    there, so reuse doesn't reload); omit `url` to keep the current page. Returns
+    the tab's target id.
+
+    Only ever switches to its own pinned tab — it never enumerates or activates
+    the user's tabs. If the pinned window was closed, it transparently opens a
+    fresh dedicated one. This replaces the new_window()-once-then-goto_url() dance
+    that spawned a new window per invocation when the pin was forgotten.
+    """
+    pinned = _read_pinned_window()
+    if pinned and any(t["targetId"] == pinned for t in list_tabs(include_chrome=True)):
+        switch_tab(pinned)
+        if url and url != "about:blank" and current_tab().get("url") != url:
+            goto_url(url)
+        return pinned
+    tid = new_window(url or "about:blank")
+    _write_pinned_window(tid)
+    return tid
+
+def set_viewport(width, height, mobile=False, device_scale_factor=0):
+    """Override the viewport via CDP so one browser tests phone and desktop widths
+    without resizing a real window. `mobile=True` also enables touch emulation, so
+    responsive layouts that key off pointer/hover behave like a phone. Persists
+    until reset_viewport(). device_scale_factor 0 = use the display's own."""
+    cdp("Emulation.setDeviceMetricsOverride",
+        width=int(width), height=int(height),
+        deviceScaleFactor=device_scale_factor, mobile=bool(mobile))
+    try: cdp("Emulation.setTouchEmulationEnabled", enabled=bool(mobile))
+    except Exception: pass
+    return {"width": int(width), "height": int(height), "mobile": bool(mobile)}
+
+
+def reset_viewport():
+    """Clear a set_viewport() override, back to the real window size."""
+    try: cdp("Emulation.clearDeviceMetricsOverride")
+    except Exception: pass
+    try: cdp("Emulation.setTouchEmulationEnabled", enabled=False)
+    except Exception: pass
+
+
+def mobile_viewport():
+    """Emulate a typical phone (390x844, touch on) — one half of a responsive check."""
+    return set_viewport(390, 844, mobile=True, device_scale_factor=3)
+
+
+def desktop_viewport():
+    """Emulate a standard desktop (1280x800) — the other half of a responsive check."""
+    return set_viewport(1280, 800, mobile=False)
+
 
 def ensure_real_tab():
     """Switch to a real user tab if current is chrome:// / internal / stale."""

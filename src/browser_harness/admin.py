@@ -170,14 +170,125 @@ def _chrome_not_running(msg):
 
 
 def _is_local_chrome_mode(env=None):
-    """True when the daemon discovers a local Chrome instead of a remote CDP WS."""
-    env = env or {}
-    return not (
-        env.get("BU_CDP_WS")
-        or env.get("BU_CDP_URL")
-        or os.environ.get("BU_CDP_WS")
-        or os.environ.get("BU_CDP_URL")
+    """True when the daemon must discover the user's live Chrome (and so may hit
+    the chrome://inspect 'Allow remote debugging' consent), rather than being
+    pointed at an explicit CDP endpoint. A pinned BU_CDP_URL — e.g. the dedicated
+    debug Chrome launched with the flag — counts as remote: no consent, no prompt."""
+    def g(k):
+        return (env or {}).get(k) or os.environ.get(k)
+    return not g("BU_CDP_WS") and not g("BU_CDP_URL")
+
+
+# Dedicated debug Chrome: a SEPARATE Chrome we launch ourselves with remote
+# debugging enabled at startup (a launch flag, not the runtime chrome://inspect
+# toggle) and its own profile dir. Because the flag is set at launch, Chrome
+# never shows the "Allow remote debugging for this browser instance" consent —
+# not on first connect, not on any daemon restart. A non-default port keeps it
+# clear of the everyday Chrome the 9222/9223 probe would find.
+DEBUG_CHROME_PORT = int(os.environ.get("BU_DEBUG_CHROME_PORT", "9333"))
+DEBUG_CHROME_PROFILE = Path(
+    os.environ.get("BU_DEBUG_CHROME_PROFILE", str(Path.home() / ".browser-harness" / "debug-profile"))
+).expanduser()
+
+
+def _chrome_binary():
+    """Path to an installed Chrome/Chromium executable, or None."""
+    import platform, shutil
+    system = platform.system()
+    if system == "Darwin":
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+    elif system == "Windows":
+        candidates = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ]
+    else:
+        candidates = [
+            shutil.which(n)
+            for n in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome")
+        ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
+def _debug_chrome_alive(port):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.5).close()
+        return True
+    except OSError:
+        return False
+
+
+def _start_debug_chrome_process(port):
+    """Launch the dedicated debug Chrome and block until its debug port answers.
+    Low-level: no .env write, no daemon restart — safe to call from ensure_daemon."""
+    import subprocess
+    chrome = _chrome_binary()
+    if not chrome:
+        raise RuntimeError("no Chrome/Chromium binary found — install Chrome or set BU_CDP_URL manually")
+    DEBUG_CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
+    subprocess.Popen(
+        [
+            chrome,
+            f"--remote-debugging-port={port}",
+            f"--user-data-dir={DEBUG_CHROME_PROFILE}",
+            "--remote-allow-origins=*",  # newer Chrome rejects the CDP WS handshake (403) without this
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **ipc.spawn_kwargs(),
     )
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if _debug_chrome_alive(port):
+            return f"http://127.0.0.1:{port}"
+        time.sleep(0.3)
+    raise RuntimeError(f"debug Chrome didn't open its debug port {port} within 15s")
+
+
+def _env_file_path():
+    return Path(__file__).resolve().parents[2] / ".env"
+
+
+def _upsert_env(key, value):
+    """Set key=value in the repo .env, replacing any existing line for that key."""
+    p = _env_file_path()
+    lines, found = [], False
+    if p.exists():
+        for line in p.read_text().splitlines():
+            if line.strip().startswith(f"{key}="):
+                lines.append(f"{key}={value}")
+                found = True
+            else:
+                lines.append(line)
+    if not found:
+        lines.append(f"{key}={value}")
+    p.write_text("\n".join(lines) + "\n")
+
+
+def launch_debug_chrome(port=None, force=False):
+    """Launch (or reuse) a dedicated debug Chrome and pin the harness to it permanently.
+
+    Starts a SEPARATE Chrome with remote debugging on at launch and its own profile,
+    so the "Allow remote debugging" consent never appears again — not now, not after
+    a daemon restart. Persists BU_CDP_URL to the repo .env so every future invocation
+    uses it, then restarts the daemon to connect immediately. Idempotent: reuses an
+    already-running debug Chrome unless force=True. Returns the pinned CDP HTTP endpoint.
+    """
+    port = port or DEBUG_CHROME_PORT
+    endpoint = f"http://127.0.0.1:{port}" if (_debug_chrome_alive(port) and not force) \
+        else _start_debug_chrome_process(port)
+    _upsert_env("BU_CDP_URL", endpoint)
+    os.environ["BU_CDP_URL"] = endpoint
+    restart_daemon()
+    return endpoint
 
 
 def daemon_alive(name=None):
@@ -357,6 +468,17 @@ def ensure_daemon(wait=60.0, name=None, env=None):
 
     import subprocess, sys
     local = _is_local_chrome_mode(env)
+    # Self-heal a pinned debug Chrome the user closed: if BU_CDP_URL points at a
+    # dead local debug port, relaunch that dedicated Chrome before the daemon
+    # tries to attach — so quitting it never brings back the consent prompt.
+    cdp_url = (env or {}).get("BU_CDP_URL") or os.environ.get("BU_CDP_URL")
+    if cdp_url and "127.0.0.1" in cdp_url:
+        try:
+            port = int(cdp_url.rsplit(":", 1)[1].split("/")[0])
+            if not _debug_chrome_alive(port):
+                _start_debug_chrome_process(port)
+        except (ValueError, IndexError, RuntimeError):
+            pass
     launched_browser = False
     opened_inspect = False
     for _ in range(3):

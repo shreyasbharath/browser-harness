@@ -16,6 +16,7 @@ from .admin import (
     daemon_alive,
     daemon_browser_kind,
     ensure_daemon,
+    launch_debug_chrome,
     list_cloud_profiles,
     list_local_profiles,
     print_update_banner,
@@ -63,6 +64,8 @@ Commands:
   browser-harness telemetry status    show anonymous telemetry opt-out state
   browser-harness --update [-y]    pull the latest version (agents: pass -y)
   browser-harness --reload         stop the daemon so next call picks up code changes
+  browser-harness --debug-chrome   launch a dedicated debug Chrome + pin it (no more
+                                   "Allow remote debugging" prompts); -f to force relaunch
 """
 
 USAGE = """Usage:
@@ -357,6 +360,12 @@ def _run(args):
     if args and args[0] == "--reload":
         restart_daemon()
         print("daemon stopped — will restart fresh on next call")
+        return
+    if args and args[0] == "--debug-chrome":
+        force = any(a in {"-f", "--force"} for a in args[1:])
+        endpoint = launch_debug_chrome(force=force)
+        print(f"dedicated debug Chrome pinned at {endpoint} (BU_CDP_URL written to .env)")
+        print("the 'Allow remote debugging' consent will no longer appear — this Chrome has it on at launch")
         return
     if args and args[0] == "--debug-clicks":
         os.environ["BH_DEBUG_CLICKS"] = "1"
