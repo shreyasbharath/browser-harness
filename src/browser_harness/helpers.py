@@ -373,7 +373,7 @@ def _pinned_window_path():
     # Per-endpoint file holding the dedicated agent window's tab target id, so
     # the pin survives across separate `browser-harness -c` invocations (each is
     # its own process; only the daemon + this file carry state between them).
-    return ipc._TMP / f"{ipc._stem(NAME)}.win"
+    return ipc.window_path(NAME)
 
 
 def _read_pinned_window():

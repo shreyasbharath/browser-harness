@@ -49,6 +49,7 @@ def _tmp_stem(name):  # "bu" when BH_TMP_DIR isolates us, else "bu-<NAME>"
 
 
 def log_path(name):   return _TMP / f"{_tmp_stem(name)}.log"
+def window_path(name): return _TMP / f"{_tmp_stem(name)}.win"
 def pid_path(name):   return _RUNTIME / f"{_runtime_stem(name)}.pid"
 def port_path(name):  return _RUNTIME / f"{_runtime_stem(name)}.port"  # Windows-only: holds {"port","token"} JSON
 def _sock_path(name): return _RUNTIME / f"{_runtime_stem(name)}.sock"

@@ -9,6 +9,13 @@ from PIL import Image
 from browser_harness import helpers
 
 
+def test_pinned_window_uses_supported_ipc_path(monkeypatch, tmp_path):
+    expected = tmp_path / "window.pin"
+    monkeypatch.setattr(helpers.ipc, "window_path", lambda name: expected, raising=False)
+
+    assert helpers._pinned_window_path() == expected
+
+
 def _run(fake_png, width, height, **kwargs):
     fake = lambda method, **_: {"data": fake_png(width, height)}
     with patch("browser_harness.helpers.cdp", side_effect=fake), tempfile.TemporaryDirectory() as d:
