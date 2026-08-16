@@ -21,6 +21,12 @@ Any demo, screen capture, walkthrough or before/after clip goes through the `dem
 
 This holds mid-flow. Already driving the harness to verify something and then asked to record it? Stop and hand off. Being three calls deep in `capture_screenshot` is the moment the mistake happens, not a reason to continue.
 
+## Recording is not this skill's job
+
+Any demo, screen capture, walkthrough or before/after clip goes through the `demo-recorder` skill (`~/.claude/skills/demo-recorder/SKILL.md`). It runs on this harness, so reaching for `capture_screenshot` in a loop and stitching with ffmpeg looks like the obvious move and is wrong: you lose captions, viewport control and the webm encode, and you rebuild the engine badly every time.
+
+This holds mid-flow. Already driving the harness to verify something and then asked to record it? Stop and hand off. Being three calls deep in `capture_screenshot` is the moment the mistake happens, not a reason to continue.
+
 ## Usage
 
 ```bash
