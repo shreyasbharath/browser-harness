@@ -364,9 +364,28 @@ def new_window(url="about:blank"):
     # one whenever a later `browser-harness -c` call forgets the tab is open.
     tid = cdp("Target.createTarget", url="about:blank", newWindow=True)["targetId"]
     switch_tab(tid)
+    maximize_window(tid)
     if url != "about:blank":
         goto_url(url)
     return tid
+
+
+def maximize_window(target=None):
+    """Maximize the OS window hosting `target` (defaults to the current tab).
+
+    Target.createTarget(newWindow=True) opens Chrome's default new-window size,
+    which lands at roughly a quarter of the screen — unusable for a demo the
+    user is meant to watch live. windowState must go through "normal" first:
+    Chrome silently ignores a maximize request issued while a prior
+    minimized/fullscreen state is still active.
+    """
+    target_id = _target_id(target) if target is not None else current_tab()["targetId"]
+    window_id = cdp("Browser.getWindowForTarget", targetId=target_id)["windowId"]
+    try:
+        cdp("Browser.setWindowBounds", windowId=window_id, bounds={"windowState": "normal"})
+    except Exception:
+        pass
+    cdp("Browser.setWindowBounds", windowId=window_id, bounds={"windowState": "maximized"})
 
 
 def _pinned_window_path():
